@@ -939,6 +939,7 @@ CODE
 // Debug options
 #define IMGUI_DEBUG_NAV_SCORING     0
 #define IMGUI_DEBUG_NAV_RECTS       0
+#define IMGUI_DEBUG_MULTISELECT     0
 
 // Visual Studio warnings
 #ifdef _MSC_VER
@@ -1095,6 +1096,7 @@ ImGuiStyle::ImGuiStyle()
     FrameBorderSize         = 0.0f;             // Thickness of border around frames. Generally set to 0.0f or 1.0f. Other values not well tested.
     ItemSpacing             = ImVec2(8,4);      // Horizontal and vertical spacing between widgets/lines
     ItemInnerSpacing        = ImVec2(4,4);      // Horizontal and vertical spacing between within elements of a composed widget (e.g. a slider and its label)
+    SelectableSpacing       = ImVec2(0,0);      // Horizontal and vertical spacing between selectables (by default they are canceling out the effect of ItemSpacing).
     TouchExtraPadding       = ImVec2(0,0);      // Expand reactive bounding box for touch-based system where touch position is not accurate enough. Unfortunately we don't sort widgets so priority on overlap will always be given to the first widget. So don't grow this too much!
     IndentSpacing           = 21.0f;            // Horizontal spacing when e.g. entering a tree node. Generally == (FontSize + FramePadding.x*2).
     ColumnsMinSpacing       = 6.0f;             // Minimum horizontal spacing between two columns
@@ -1130,6 +1132,7 @@ void ImGuiStyle::ScaleAllSizes(float scale_factor)
     TabRounding = ImFloor(TabRounding * scale_factor);
     ItemSpacing = ImFloor(ItemSpacing * scale_factor);
     ItemInnerSpacing = ImFloor(ItemInnerSpacing * scale_factor);
+    SelectableSpacing = ImFloor(SelectableSpacing * scale_factor);
     TouchExtraPadding = ImFloor(TouchExtraPadding * scale_factor);
     IndentSpacing = ImFloor(IndentSpacing * scale_factor);
     ColumnsMinSpacing = ImFloor(ColumnsMinSpacing * scale_factor);
@@ -2635,6 +2638,7 @@ void ImGui::SetActiveID(ImGuiID id, ImGuiWindow* window)
     if (g.ActiveIdIsJustActivated)
     {
         g.ActiveIdTimer = 0.0f;
+        g.ActiveIdPressed = false;
         g.ActiveIdHasBeenEdited = false;
         if (id != 0)
         {
@@ -3600,6 +3604,7 @@ void ImGui::Shutdown(ImGuiContext* context)
     g.InputTextState.TextW.clear();
     g.InputTextState.InitialText.clear();
     g.InputTextState.TempBuffer.clear();
+    g.MultiSelectScopeWindow = NULL;
 
     for (int i = 0; i < g.SettingsWindows.Size; i++)
         IM_DELETE(g.SettingsWindows[i].Name);
@@ -4233,6 +4238,12 @@ bool ImGui::IsItemFocused()
 bool ImGui::IsItemClicked(int mouse_button)
 {
     return IsMouseClicked(mouse_button) && IsItemHovered(ImGuiHoveredFlags_None);
+}
+
+bool ImGui::IsItemToggledSelection()
+{
+    ImGuiContext& g = *GImGui;
+    return (g.CurrentWindow->DC.LastItemStatusFlags & ImGuiItemStatusFlags_ToggledSelection) ? true : false;
 }
 
 bool ImGui::IsAnyItemHovered()
@@ -5777,6 +5788,7 @@ static const ImGuiStyleVarInfo GStyleVarInfo[] =
     { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, FrameBorderSize) },    // ImGuiStyleVar_FrameBorderSize
     { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, ItemSpacing) },        // ImGuiStyleVar_ItemSpacing
     { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, ItemInnerSpacing) },   // ImGuiStyleVar_ItemInnerSpacing
+    { ImGuiDataType_Float, 2, (ImU32)IM_OFFSETOF(ImGuiStyle, SelectableSpacing) },  // ImGuiStyleVar_SelectableSpacing
     { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, IndentSpacing) },      // ImGuiStyleVar_IndentSpacing
     { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, ScrollbarSize) },      // ImGuiStyleVar_ScrollbarSize
     { ImGuiDataType_Float, 1, (ImU32)IM_OFFSETOF(ImGuiStyle, ScrollbarRounding) },  // ImGuiStyleVar_ScrollbarRounding
@@ -7295,6 +7307,7 @@ static void ImGui::NavProcessItem(ImGuiWindow* window, const ImRect& nav_bb, con
         if (new_best)
         {
             result->ID = id;
+            result->SelectScopeId = g.MultiSelectScopeId;
             result->Window = window;
             result->RectRel = nav_bb_rel;
         }
@@ -7306,6 +7319,7 @@ static void ImGui::NavProcessItem(ImGuiWindow* window, const ImRect& nav_bb, con
                 {
                     result = &g.NavMoveResultLocalVisibleSet;
                     result->ID = id;
+                    result->SelectScopeId = g.MultiSelectScopeId;
                     result->Window = window;
                     result->RectRel = nav_bb_rel;
                 }
@@ -7846,8 +7860,13 @@ static void ImGui::NavUpdateMoveResult()
 
     ClearActiveID();
     g.NavWindow = result->Window;
+    if (g.NavId != result->ID)
+    {
+        // Don't set NavJustMovedToId if just landed on the same spot (which may happen with ImGuiNavMoveFlags_AllowCurrentNavId)
+        g.NavJustMovedToId = result->ID;
+        g.NavJustMovedToSelectScopeId = result->SelectScopeId;
+    }
     SetNavIDWithRectRel(result->ID, g.NavLayer, result->RectRel);
-    g.NavJustMovedToId = result->ID;
     g.NavMoveFromClampedRefRect = false;
 }
 

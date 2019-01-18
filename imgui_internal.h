@@ -69,6 +69,7 @@ struct ImGuiGroupData;              // Stacked storage data for BeginGroup()/End
 struct ImGuiInputTextState;         // Internal state of the currently focused/edited text input box
 struct ImGuiItemHoveredDataBackup;  // Backup and restore IsItemHovered() internal data
 struct ImGuiMenuColumns;            // Simple column measurement, currently used for MenuItem() only
+struct ImGuiMultiSelectState;       // Multi-selection state
 struct ImGuiNavMoveResult;          // Result of a directional navigation move query result
 struct ImGuiNextWindowData;         // Storage for SetNexWindow** functions
 struct ImGuiPopupRef;               // Storage for current popup stack
@@ -310,7 +311,8 @@ enum ImGuiButtonFlags_
     ImGuiButtonFlags_NoKeyModifiers         = 1 << 10,  // disable interaction if a key modifier is held
     ImGuiButtonFlags_NoHoldingActiveID      = 1 << 11,  // don't set ActiveId while holding the mouse (ImGuiButtonFlags_PressedOnClick only)
     ImGuiButtonFlags_PressedOnDragDropHold  = 1 << 12,  // press when held into while we are drag and dropping another item (used by e.g. tree nodes, collapsing headers)
-    ImGuiButtonFlags_NoNavFocus             = 1 << 13   // don't override navigation focus when activated
+    ImGuiButtonFlags_NoNavFocus             = 1 << 13,  // don't override navigation focus when activated
+    ImGuiButtonFlags_NoHoveredOnNav         = 1 << 14   // don't report as hovered when navigated on
 };
 
 enum ImGuiSliderFlags_
@@ -358,7 +360,8 @@ enum ImGuiItemStatusFlags_
     ImGuiItemStatusFlags_None               = 0,
     ImGuiItemStatusFlags_HoveredRect        = 1 << 0,
     ImGuiItemStatusFlags_HasDisplayRect     = 1 << 1,
-    ImGuiItemStatusFlags_Edited             = 1 << 2    // Value exposed by item was edited in the current frame (should match the bool return value of most widgets)
+    ImGuiItemStatusFlags_Edited             = 1 << 2,   // Value exposed by item was edited in the current frame (should match the bool return value of most widgets)
+    ImGuiItemStatusFlags_ToggledSelection   = 1 << 3    // Set when Selectable(), TreeNode() reports toggling a selection. We don't report "Selected" because reporting the change allows us to handle clipping with less issues.
 
 #ifdef IMGUI_ENABLE_TEST_ENGINE
     , // [imgui-test only]
@@ -417,7 +420,7 @@ enum ImGuiNavHighlightFlags_
     ImGuiNavHighlightFlags_None         = 0,
     ImGuiNavHighlightFlags_TypeDefault  = 1 << 0,
     ImGuiNavHighlightFlags_TypeThin     = 1 << 1,
-    ImGuiNavHighlightFlags_AlwaysDraw   = 1 << 2,
+    ImGuiNavHighlightFlags_AlwaysDraw   = 1 << 2,   // Draw rectangular highlight if (g.NavId == id) _even_ when using the mouse.
     ImGuiNavHighlightFlags_NoRounding   = 1 << 3
 };
 
@@ -648,6 +651,17 @@ struct ImGuiColumnsSet
     }
 };
 
+struct IMGUI_API ImGuiMultiSelectState
+{
+    ImGuiMultiSelectData    In;                     // The In requests are set and returned by BeginMultiSelect()
+    ImGuiMultiSelectData    Out;                    // The Out requests are finalized and returned by EndMultiSelect()
+    bool                    InRangeDstPassedBy;     // (Internal) set by the the item that match NavJustMovedToId when InRequestRangeSetNav is set.
+    bool                    InRequestSetRangeNav;   // (Internal) set by BeginMultiSelect() when using Shift+Navigation. Because scrolling may be affected we can't afford a frame of lag with Shift+Navigation.
+
+    ImGuiMultiSelectState() { Clear(); }
+    void Clear()            { In.Clear(); Out.Clear(); InRangeDstPassedBy = InRequestSetRangeNav = false; }
+};
+
 // Data shared between all ImDrawList instances
 struct IMGUI_API ImDrawListSharedData
 {
@@ -676,6 +690,7 @@ struct ImDrawDataBuilder
 struct ImGuiNavMoveResult
 {
     ImGuiID       ID;           // Best candidate
+    ImGuiID       SelectScopeId;// Best candidate window current selectable group ID
     ImGuiWindow*  Window;       // Best candidate window
     float         DistBox;      // Best candidate box distance to current NavId
     float         DistCenter;   // Best candidate center distance to current NavId
@@ -683,7 +698,7 @@ struct ImGuiNavMoveResult
     ImRect        RectRel;      // Best candidate bounding box in window relative space
 
     ImGuiNavMoveResult() { Clear(); }
-    void Clear()         { ID = 0; Window = NULL; DistBox = DistCenter = DistAxial = FLT_MAX; RectRel = ImRect(); }
+    void Clear()         { ID = SelectScopeId = 0; Window = NULL; DistBox = DistCenter = DistAxial = FLT_MAX; RectRel = ImRect(); }
 };
 
 // Storage for SetNexWindow** functions
@@ -773,6 +788,7 @@ struct ImGuiContext
     float                   ActiveIdTimer;
     bool                    ActiveIdIsJustActivated;            // Set at the time of activation for one frame
     bool                    ActiveIdAllowOverlap;               // Active widget allows another widget to steal active id (generally for overlapping widgets, but not always)
+    bool                    ActiveIdPressed;                    // Track whether the active id led to a press (this is to allow changing between PressOnClick and PressOnRelease without pressing twice)
     bool                    ActiveIdHasBeenEdited;              // Was the value associated to the widget Edited over the course of the Active state.
     bool                    ActiveIdPreviousFrameIsAlive;
     bool                    ActiveIdPreviousFrameHasBeenEdited;
@@ -792,6 +808,8 @@ struct ImGuiContext
     ImVector<ImGuiPopupRef> OpenPopupStack;                     // Which popups are open (persistent)
     ImVector<ImGuiPopupRef> BeginPopupStack;                    // Which level of BeginPopup() we are in (reset every frame)
     ImGuiNextWindowData     NextWindowData;                     // Storage for SetNextWindow** functions
+    void*                   NextItemMultiSelectData;
+    bool                    NextItemMultiSelectDataIsSet;
     bool                    NextTreeNodeOpenVal;                // Storage for SetNextTreeNode** functions
     ImGuiCond               NextTreeNodeOpenCond;
 
@@ -804,6 +822,7 @@ struct ImGuiContext
     ImGuiID                 NavInputId;                         // ~~ IsNavInputPressed(ImGuiNavInput_Input) ? NavId : 0
     ImGuiID                 NavJustTabbedId;                    // Just tabbed to this id.
     ImGuiID                 NavJustMovedToId;                   // Just navigated to this id (result of a successfully MoveRequest)
+    ImGuiID                 NavJustMovedToSelectScopeId;
     ImGuiID                 NavNextActivateId;                  // Set by ActivateItem(), queued until next frame
     ImGuiInputSource        NavInputSource;                     // Keyboard or Gamepad mode? THIS WILL ONLY BE None or NavGamepad or NavKeyboard.
     ImRect                  NavScoringRectScreen;               // Rectangle used for scoring, in screen space. Based of window->DC.NavRefRectRel[], modified for directional navigation scoring.
@@ -879,6 +898,10 @@ struct ImGuiContext
 
     // Platform support
     ImVec2                  PlatformImePos, PlatformImeLastPos; // Cursor position request & last passed to the OS Input Method Editor
+    ImGuiID                 MultiSelectScopeId;
+    ImGuiWindow*            MultiSelectScopeWindow;
+    ImGuiMultiSelectFlags   MultiSelectFlags;
+    ImGuiMultiSelectState   MultiSelectState;
 
     // Settings
     bool                           SettingsLoaded;
@@ -929,6 +952,7 @@ struct ImGuiContext
         ActiveIdTimer = 0.0f;
         ActiveIdIsJustActivated = false;
         ActiveIdAllowOverlap = false;
+        ActiveIdPressed = false;
         ActiveIdHasBeenEdited = false;
         ActiveIdPreviousFrameIsAlive = false;
         ActiveIdPreviousFrameHasBeenEdited = false;
@@ -941,12 +965,14 @@ struct ImGuiContext
         LastActiveIdTimer = 0.0f;
         LastValidMousePos = ImVec2(0.0f, 0.0f);
         MovingWindow = NULL;
+        NextItemMultiSelectData = NULL;
+        NextItemMultiSelectDataIsSet = false;
         NextTreeNodeOpenVal = false;
         NextTreeNodeOpenCond = 0;
 
         NavWindow = NULL;
         NavId = NavActivateId = NavActivateDownId = NavActivatePressedId = NavInputId = 0;
-        NavJustTabbedId = NavJustMovedToId = NavNextActivateId = 0;
+        NavJustTabbedId = NavJustMovedToId = NavJustMovedToSelectScopeId = NavNextActivateId = 0;
         NavInputSource = ImGuiInputSource_None;
         NavScoringRectScreen = ImRect();
         NavScoringCount = 0;
@@ -993,6 +1019,9 @@ struct ImGuiContext
         ScrollbarClickDeltaToGrabCenter = ImVec2(0.0f, 0.0f);
         TooltipOverrideCount = 0;
         PlatformImePos = PlatformImeLastPos = ImVec2(FLT_MAX, FLT_MAX);
+        MultiSelectScopeId = 0;
+        MultiSelectScopeWindow = NULL;
+        MultiSelectFlags = 0;
 
         SettingsLoaded = false;
         SettingsDirtyTimer = 0.0f;
@@ -1384,6 +1413,10 @@ namespace ImGui
     IMGUI_API void          BeginColumns(const char* str_id, int count, ImGuiColumnsFlags flags = 0); // setup number of columns. use an identifier to distinguish multiple column sets. close with EndColumns().
     IMGUI_API void          EndColumns();                                                             // close columns
     IMGUI_API void          PushColumnClipRect(int column_index = -1);
+
+    // New Multi-Selection/Range-Selection API (FIXME-WIP)
+    IMGUI_API void          MultiSelectItemHeader(ImGuiID id, bool* p_selected);
+    IMGUI_API void          MultiSelectItemFooter(ImGuiID id, bool* p_selected, bool* p_pressed);
 
     // Tab Bars
     IMGUI_API bool          BeginTabBarEx(ImGuiTabBar* tab_bar, const ImRect& bb, ImGuiTabBarFlags flags);
